@@ -18,6 +18,12 @@ preparar <- function(crudo) {
   d$fecha <- as.Date(format(d$inicio, tz = ZONA_HORARIA))
   d$acepta <- d$consent_understand == "yes"
   d$completa <- d$acepta & Reduce(`|`, lapply(VARS_FIN, function(v) respondida(d[[v]])))
+  # Desde que la encuesta tiene filtro de calidad, solo cuenta quien lo pasó al
+  # terminar la última página (filtro_calidad == "ok"). Así no cuentan los
+  # excluidos por tiempo, que responden la última página antes de ser
+  # redirigidos a end_calidad, ni quien la responde sin apretar "Siguiente".
+  con_filtro <- !is.na(d$inicio) & d$inicio >= INICIO_FILTRO_CALIDAD
+  d$completa <- d$completa & (!con_filtro | d$filtro_calidad == "ok")
   d$duracion_min <- ifelse(d$completa & !is.na(d$fin), as.numeric(difftime(d$fin, d$inicio, units = "mins")), NA)
 
   # Edad y categorías de cuota
@@ -27,13 +33,23 @@ preparar <- function(crudo) {
   d$educ_cuota <- unname(EDUC_CUOTA[d$education])
   d$sexo_cuota <- c("0" = "Hombre", "1" = "Mujer")[d$sexo]
 
-  # Sliders: si se marcó "Prefiero no responder", el valor del slider no cuenta
+  # Nivel educativo del perfil Netquest (config/educacion_netquest.csv): por
+  # ticket y, si no calza, por id_user.
+  nq <- EDUC_NETQUEST
+  cod <- nq$codigo[match(d$ticket, nq$ticket, incomparables = "")]
+  por_id <- nq$codigo[match(tolower(d$id_user), tolower(nq$id_user), incomparables = "")]
+  cod[is.na(cod)] <- por_id[is.na(cod)]
+  d$educ_netquest <- unname(EDUC_NETQUEST_CUOTA[as.character(cod)])
+
+  # Sliders: si se marcó una casilla bajo el slider ("Prefiero no responder";
+  # en posicion_politica también "Independiente" o "Ninguno"), el valor del
+  # slider no cuenta. _es_nr marca solo "Prefiero no responder".
   for (v in SLIDERS) {
-    nr <- d[[paste0(v, "_nr")]] == COD_NR
+    casilla <- d[[paste0(v, "_nr")]]
     valor <- suppressWarnings(as.numeric(d[[v]]))
-    valor[nr] <- NA
+    valor[respondida(casilla)] <- NA
     d[[paste0(v, "_num")]] <- valor
-    d[[paste0(v, "_es_nr")]] <- nr
+    d[[paste0(v, "_es_nr")]] <- casilla == COD_NR
   }
 
   # Sistema operativo a partir del navegador ("Chrome v154, Windows")
@@ -56,23 +72,6 @@ preparar <- function(crudo) {
   }, "")
 
   d
-}
-
-# Momento desde el que se cuentan las sesiones (NULL: sin corte). Se lee al
-# iniciar la app, después de cargar .env.
-inicio_conteo <- function() {
-  x <- trimws(Sys.getenv("MONITOR_DESDE", INICIO_CONTEO_DEFAULT))
-  if (!nzchar(x) || tolower(x) == "todas") return(NULL)
-  desde <- as.POSIXct(x, tz = ZONA_HORARIA)
-  # Misma zona que d$inicio, para comparar sin avisos
-  attr(desde, "tzone") <- "UTC"
-  desde
-}
-
-# Deja fuera las sesiones iniciadas antes del corte (y las sin hora de inicio)
-desde_corte <- function(d, desde) {
-  if (is.null(desde)) return(d)
-  d[!is.na(d$inicio) & d$inicio >= desde, , drop = FALSE]
 }
 
 # Aplica los filtros de la barra lateral
@@ -157,8 +156,8 @@ frecuencias <- function(d, var, niveles = NULL, etiquetas = TRUE) {
 }
 
 # Comparación con el marco de cuotas
-cuotas <- function(d, var) {
-  marco <- MARCO_CUOTAS[MARCO_CUOTAS$variable == var, ]
+cuotas <- function(d, var, marco = var) {
+  marco <- MARCO_CUOTAS[MARCO_CUOTAS$variable == marco, ]
   x <- d[[var]]
   x <- x[!is.na(x)]
   obs <- table(factor(as.character(x), levels = marco$categoria))
@@ -167,6 +166,7 @@ cuotas <- function(d, var) {
     n = as.integer(obs),
     pct = if (sum(obs) > 0) as.numeric(obs) / sum(obs) else 0,
     p_meta = marco$p_meta,
+    n_meta = marco$n_meta,
     sin_dato = sum(is.na(d[[var]]))
   )
 }
@@ -314,7 +314,9 @@ items_mas_nsnr <- function(d, k = 10) {
   comp <- d[d$completa, , drop = FALSE]
   todos <- unlist(lapply(MODULOS_ESCALAS, function(m) m$items))
   names(todos) <- sub("^.*\\.", "", names(todos))
-  extra <- c(income = "Ingreso del hogar", adc_qstn = "Situación económica del hogar")
+  extra <- c(income = "Ingreso del hogar", household_size = "Personas en el hogar",
+             adc_qstn = "Situación económica del hogar", salud_prov = "Sistema de salud",
+             educ_prov = "Tipo de colegio")
   vars <- c(todos, extra)
   out <- data.frame(
     item = names(vars),

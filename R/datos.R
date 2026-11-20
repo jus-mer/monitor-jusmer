@@ -1,32 +1,20 @@
 # Fuente de datos -------------------------------------------------------------
 #
-# El monitor funciona en dos modos, elegidos con la variable de entorno
-# MONITOR_MODO:
+# La app lee directamente la tabla de respuestas en Supabase (Postgres), la
+# misma que escribe la encuesta. No se descarga nada a mano: la app consulta
+# la base cada REFRESCO_SEG segundos.
 #
-#   demo  (por defecto) respuestas simuladas con R/simular.R; cada
-#         actualización agrega algunas sesiones nuevas para ver la app "en vivo".
-#   base  lectura directa de la tabla de respuestas en Supabase (Postgres),
-#         la misma que escribe la encuesta. No se descarga nada a mano: la app
-#         consulta la base cada REFRESCO_SEG segundos.
-#
-# Credenciales del modo base: las mismas variables SD_* que usa surveydown
-# (SD_HOST, SD_PORT, SD_DBNAME, SD_USER, SD_PASSWORD, SD_TABLE), leídas desde
-# el entorno o desde un archivo .env en la carpeta de la app. Se recomienda un
-# usuario de Postgres con permiso de solo lectura (ver README).
-
-modo_datos <- function() {
-  if (file.exists(".env")) readRenviron(".env")
-  modo <- tolower(Sys.getenv("MONITOR_MODO", "demo"))
-  if (!modo %in% c("demo", "base")) modo <- "demo"
-  modo
-}
+# Credenciales: las mismas variables SD_* que usa surveydown (SD_HOST, SD_PORT,
+# SD_DBNAME, SD_USER, SD_PASSWORD, SD_TABLE), leídas desde el entorno o desde
+# un archivo .env en la carpeta de la app (app.R lo carga al iniciar). Se
+# recomienda un usuario de Postgres con permiso de solo lectura (ver README).
 
 # Columnas que el monitor necesita. Se excluyen a propósito ip_address,
 # cbc_profiles, los *_hist y los time_q_*: no se usan y no conviene moverlas.
 columnas_monitor <- function() {
   unique(c(
-    "session_id", "time_start", "time_end", "version_encuesta", "browser",
-    "consent_understand",
+    "session_id", "ticket", "id_user", "time_start", "time_end", "version_encuesta", "browser",
+    "consent_understand", "filtro_calidad",
     unlist(BLOQUES_FLUJO, use.names = FALSE),
     "attention_check",
     paste0(SLIDERS, "_nr")
@@ -36,7 +24,7 @@ columnas_monitor <- function() {
 conectar_base <- function() {
   for (pkg in c("DBI", "RPostgres")) {
     if (!requireNamespace(pkg, quietly = TRUE)) {
-      stop("Falta el paquete ", pkg, " para el modo base: install.packages(\"", pkg, "\")")
+      stop("Falta el paquete ", pkg, ": install.packages(\"", pkg, "\")")
     }
   }
   faltan <- c("SD_HOST", "SD_DBNAME", "SD_USER", "SD_PASSWORD")
@@ -81,26 +69,13 @@ leer_base <- function() {
 
 # Crea, para una sesión de Shiny, un reactive con los datos crudos que se
 # refresca solo cada REFRESCO_SEG segundos o al apretar `boton`.
-crear_fuente <- function(modo, base_demo, boton, session) {
+crear_fuente <- function(boton, session) {
   datos <- reactiveVal(NULL)
   error <- reactiveVal(NULL)
   actualizado <- reactiveVal(NULL)
 
-  leer <- function() {
-    if (modo == "demo") {
-      previo <- datos()
-      if (is.null(previo)) return(base_demo)
-      ultima <- max(as.POSIXct(previo$time_start, tz = "UTC", format = "%Y-%m-%d %H:%M:%S"))
-      nuevas <- simular_respuestas(stats::rpois(1, 1.5), desde = ultima, hasta = Sys.time())
-      if (nrow(nuevas) == 0) return(previo)
-      dplyr::bind_rows(previo, nuevas)
-    } else {
-      leer_base()
-    }
-  }
-
   refrescar <- function() {
-    resultado <- tryCatch(leer(), error = function(e) e)
+    resultado <- tryCatch(leer_base(), error = function(e) e)
     if (inherits(resultado, "error")) {
       error(conditionMessage(resultado))
     } else {

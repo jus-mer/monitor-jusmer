@@ -62,15 +62,17 @@ g_barras <- function(tab, orden = c("cuestionario", "frecuencia"), ancho = 34) {
 }
 
 # Barras observadas contra la meta del marco muestral (marca vertical)
+# Barras: n observado. Marca negra: n límite de la cuota (MARCO_CUOTAS$n_meta).
 g_cuotas <- function(tab) {
   if (is.null(tab) || sum(tab$n) == 0) return(sin_datos())
   tab$categoria <- factor(tab$categoria, levels = rev(levels(tab$categoria)))
-  tope <- max(c(tab$pct, tab$p_meta))
+  tope <- max(c(tab$n, tab$n_meta))
   ggplot(tab, aes(y = categoria)) +
-    geom_col(aes(x = pct), fill = COLORES$serie1, width = 0.62) +
-    geom_errorbar(aes(xmin = p_meta, xmax = p_meta), width = 0.85, linewidth = 1,
+    geom_col(aes(x = n), fill = COLORES$serie1, width = 0.62) +
+    geom_errorbar(aes(xmin = n_meta, xmax = n_meta), width = 0.85, linewidth = 1,
                   colour = COLORES$tinta) +
-    geom_text(aes(x = pmax(pct, p_meta) + tope * 0.04, label = sprintf("%s · meta %s", pct_es(pct), pct_es(p_meta))),
+    geom_text(aes(x = pmax(n, n_meta) + tope * 0.04,
+                  label = sprintf("%s de %s (%s)", num_es(n), num_es(n_meta), pct_es(n / n_meta))),
               hjust = 0, size = 3.0, colour = COLORES$tinta2) +
     scale_x_continuous(limits = c(0, tope * 2), expand = expansion(mult = c(0, 0))) +
     labs(x = NULL, y = NULL) +

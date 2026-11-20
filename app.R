@@ -7,9 +7,9 @@
 # Los archivos de R/ se cargan automáticamente al iniciar la app:
 #   R/config.R      bloques, módulos, etiquetas, cuotas y umbrales
 #   R/preguntas.R   lectura de config/questions.yml (copia del de la encuesta)
-#   R/datos.R       fuente de datos: simulada (demo) o Supabase (base)
-#   R/simular.R     generador de respuestas simuladas
+#   R/datos.R       lectura de la tabla de respuestas en Supabase
 #   R/procesar.R    variables derivadas y descriptivos
+#   R/patrones.R    patrones de respuesta (responsePatterns) y cruce de chequeos
 #   R/graficos.R    gráficos
 #
 # Correr localmente: shiny::runApp()
@@ -20,9 +20,8 @@ library(dplyr)
 library(ggplot2)
 library(DT)
 
-MODO <- modo_datos()
-DESDE <- inicio_conteo()
-BASE_DEMO <- if (MODO == "demo") simular_respuestas(430, semilla = 2026) else NULL
+# Credenciales de Supabase (variables SD_*): del entorno o del archivo .env
+if (file.exists(".env")) readRenviron(".env")
 
 # Componentes de interfaz ------------------------------------------------------
 
@@ -69,7 +68,6 @@ estilos <- tags$style(HTML(sprintf("
   .estado-critico .etiqueta-estado { color: %s; }
   .estado-neutro .etiqueta-estado { color: %s; }
   .etiqueta-estado { font-weight: 600; }
-  .modo-demo { background: #fff4d6; border: 1px solid #f2d27a; border-radius: 6px; padding: 8px 10px; font-size: 0.85rem; }
   .modo-base { background: #e6f4e6; border: 1px solid #9fd09f; border-radius: 6px; padding: 8px 10px; font-size: 0.85rem; }
   .modo-error { background: #fbe4e4; border: 1px solid #e8a0a0; border-radius: 6px; padding: 8px 10px; font-size: 0.85rem; }
   .progreso { height: 6px; background: #e1e0d9; border-radius: 3px; margin-top: 6px; overflow: hidden; }
@@ -110,13 +108,18 @@ panel_muestra <- nav_panel(
   "Muestra",
   icon = icon("users"),
   layout_column_wrap(
-    width = 1 / 3, fill = FALSE, heights_equal = "row",
+    width = 1 / 2, fill = FALSE, heights_equal = "row",
     tarjeta("Sexo", plotOutput("g_sexo", height = "190px"),
-            nota = "Barra: observado. Marca negra: meta del marco muestral."),
+            nota = "Barra: n observado. Marca negra: n límite de la cuota."),
     tarjeta("Edad", plotOutput("g_edad", height = "190px"),
-            nota = "Barra: observado. Marca negra: meta del marco muestral."),
-    tarjeta("Nivel educativo (cuota)", plotOutput("g_educ_cuota", height = "190px"),
-            nota = "Barra: observado. Marca negra: meta del marco muestral.")
+            nota = "Barra: n observado. Marca negra: n límite de la cuota.")
+  ),
+  layout_column_wrap(
+    width = 1 / 2, fill = FALSE, heights_equal = "row",
+    tarjeta("Nivel educativo declarado (cuota)", plotOutput("g_educ_cuota", height = "190px"),
+            nota = "Respuesta en la encuesta. Barra: n observado. Marca negra: n límite de la cuota."),
+    tarjeta("Nivel educativo según Netquest (cuota)", plotOutput("g_educ_netquest", height = "190px"),
+            nota = uiOutput("nota_educ_netquest", inline = TRUE))
   ),
   layout_column_wrap(
     width = 1 / 2, fill = FALSE,
@@ -139,6 +142,11 @@ panel_muestra <- nav_panel(
     width = 1 / 2, fill = FALSE,
     tarjeta("Sistema de salud", plotOutput("g_salud", height = "150px")),
     tarjeta("Tipo de colegio", plotOutput("g_colegio", height = "150px"))
+  ),
+  layout_column_wrap(
+    width = 1 / 2, fill = FALSE,
+    tarjeta("Personas en el hogar", plotOutput("g_hogar", height = "280px")),
+    tarjeta("Nivel educativo más alto de los padres", plotOutput("g_educ_padres", height = "280px"))
   )
 )
 
@@ -196,6 +204,22 @@ panel_calidad <- nav_panel(
     tarjeta("Duración de la encuesta (minutos)", plotOutput("g_duracion", height = "300px"),
             nota = "La línea discontinua marca un tercio de la mediana, el umbral usado para respuestas muy rápidas."),
     tarjeta("Ítems con más No sé y Prefiero no responder", DTOutput("t_nsnr", fill = FALSE))
+  ),
+  layout_columns(
+    col_widths = c(7, 5),
+    tarjeta("Patrones de respuesta en las escalas", uiOutput("t_patrones"),
+            nota = paste(
+              "Paquete responsePatterns. Auto-correlación: respuestas que se",
+              "repiten cada cierto número de ítems (desfase 1 = línea recta). Secuencias: patrones que se repiten",
+              "(p. ej. 1-2-3-1-2-3). Ambos se marcan desde el percentil 95 de la muestra filtrada, por lo que cerca",
+              "de un 5 % queda marcado por construcción: sirven para priorizar casos a revisar, no para excluir.",
+              "Se excluyen casos con más de 20 % de No sé / No responde en las escalas analizadas.")),
+    tarjeta("Chequeo de atención y de manipulación", uiOutput("t_chequeos"),
+            nota = paste(
+              "Falla atención: respondió la pregunta que debía dejar en blanco. Falla manipulación: no respondió",
+              "'repartir un monto'. Phi: correlación entre ambas fallas (0/1), cuyo máximo posible depende de",
+              "qué tan frecuente es cada falla. V de Cramer: asociación entre fallar atención y las tres respuestas",
+              "del chequeo de manipulación. p: prueba exacta de Fisher (simulada en la tabla de 2 × 3)."))
   )
 )
 
@@ -222,11 +246,6 @@ barra_lateral <- sidebar(
   radioButtons("forma", "Forma de la encuesta", c("Ambas" = "ambas", "A" = "A", "B" = "B"), inline = TRUE),
   dateRangeInput("rango", "Fechas de inicio", start = NULL, end = NULL,
                  format = "dd/mm/yyyy", language = "es", separator = "a"),
-  if (!is.null(DESDE)) helpText(sprintf(
-    "Solo se cuentan las sesiones iniciadas desde el %s.",
-    format(DESDE, if (format(DESDE, "%H:%M", tz = ZONA_HORARIA) == "00:00") "%d/%m/%Y" else "%d/%m/%Y a las %H:%M",
-           tz = ZONA_HORARIA)
-  )),
   numericInput("meta", "Meta de encuestas completas", value = META_N_DEFAULT, min = 1, step = 100),
   hr(),
   actionButton("actualizar", "Actualizar ahora", icon = icon("rotate"), class = "btn-outline-secondary"),
@@ -258,11 +277,11 @@ ui <- page_navbar(
 # Servidor ---------------------------------------------------------------------
 
 server <- function(input, output, session) {
-  fuente <- crear_fuente(MODO, BASE_DEMO, reactive(input$actualizar), session)
+  fuente <- crear_fuente(reactive(input$actualizar), session)
 
   todo <- reactive({
     req(fuente$datos())
-    desde_corte(preparar(fuente$datos()), DESDE)
+    preparar(fuente$datos())
   })
 
   # El rango de fechas abarca todo el campo: se fija con los primeros datos y,
@@ -299,9 +318,6 @@ server <- function(input, output, session) {
   output$estado_fuente <- renderUI({
     if (!is.null(fuente$error())) {
       div(class = "modo-error", tags$strong("Error al leer los datos"), tags$br(), fuente$error())
-    } else if (MODO == "demo") {
-      div(class = "modo-demo", icon("flask"), tags$strong(" Datos simulados"), tags$br(),
-          "Las cifras son inventadas. Cambie MONITOR_MODO a 'base' para leer Supabase.")
     } else {
       div(class = "modo-base", icon("database"), tags$strong(" En vivo"), tags$br(),
           sprintf("Tabla %s en Supabase", Sys.getenv("SD_TABLE", "responses")))
@@ -394,16 +410,31 @@ server <- function(input, output, session) {
   }, bg = COLORES$superficie, res = 96)
   output$g_edad <- renderPlot(g_cuotas(cuotas(datos(), "tramo_edad")), bg = COLORES$superficie, res = 96)
   output$g_educ_cuota <- renderPlot(g_cuotas(cuotas(datos(), "educ_cuota")), bg = COLORES$superficie, res = 96)
+  output$g_educ_netquest <- renderPlot(g_cuotas(cuotas(datos(), "educ_netquest", marco = "educ_cuota")),
+                                       bg = COLORES$superficie, res = 96)
+  output$nota_educ_netquest <- renderUI({
+    d <- datos()
+    sin <- sum(is.na(d$educ_netquest))
+    paste0("Perfil del panel Netquest (", ARCHIVO_EDUC_NETQUEST, "). Técnica completa y universitaria ",
+           "incompleta vienen juntas en Netquest y se cuentan como técnica superior. ",
+           if (sin > 0) sprintf("%s casos sin información de Netquest. ", num_es(sin)),
+           "Barra: n observado. Marca negra: n límite de la cuota.")
+  })
   output$g_education <- renderPlot(g_barras(frecuencias(datos(), "education"), ancho = 46), bg = COLORES$superficie, res = 96)
   output$g_income <- renderPlot(g_barras(frecuencias(datos(), "income"), ancho = 46), bg = COLORES$superficie, res = 96)
   output$g_estatus <- renderPlot(g_histograma(datos()$estatus_subjetivo_num, 1, xlab = NULL), bg = COLORES$superficie, res = 96)
   output$g_politica <- renderPlot(g_histograma(datos()$posicion_politica_num, 1, xlab = NULL), bg = COLORES$superficie, res = 96)
+  # Casillas bajo el slider ("Prefiero no responder"; en posición política
+  # también "Independiente" y "Ninguno"), con sus etiquetas de questions.yml
   texto_nr <- function(v) {
     d <- datos()
-    respondio <- respondida(d[[v]]) | d[[paste0(v, "_es_nr")]]
-    sprintf("Prefiero no responder: %s (%s de %s)",
-            pct_es(mean(d[[paste0(v, "_es_nr")]][respondio])),
-            num_es(sum(d[[paste0(v, "_es_nr")]])), num_es(sum(respondio)))
+    casilla <- d[[paste0(v, "_nr")]]
+    respondio <- respondida(d[[v]]) | respondida(casilla)
+    codigos <- PREGUNTAS[[paste0(v, "_nr")]]$codigos
+    partes <- vapply(names(codigos), function(cod) {
+      sprintf("%s: %s (%s)", codigos[[cod]], pct_es(mean(casilla[respondio] == cod)), num_es(sum(casilla == cod)))
+    }, "")
+    sprintf("%s, de %s.", paste(partes, collapse = " · "), num_es(sum(respondio)))
   }
   output$nr_estatus <- renderText(texto_nr("estatus_subjetivo"))
   output$nr_politica <- renderText(texto_nr("posicion_politica"))
@@ -411,6 +442,8 @@ server <- function(input, output, session) {
   output$g_gender <- renderPlot(g_barras(frecuencias(datos(), "gender"), ancho = 46), bg = COLORES$superficie, res = 96)
   output$g_salud <- renderPlot(g_barras(frecuencias(datos(), "salud_prov")), bg = COLORES$superficie, res = 96)
   output$g_colegio <- renderPlot(g_barras(frecuencias(datos(), "educ_prov")), bg = COLORES$superficie, res = 96)
+  output$g_hogar <- renderPlot(g_barras(frecuencias(datos(), "household_size")), bg = COLORES$superficie, res = 96)
+  output$g_educ_padres <- renderPlot(g_barras(frecuencias(datos(), "educ_padres"), ancho = 46), bg = COLORES$superficie, res = 96)
 
   # Escalas -------------------------------------------------------------------
   lapply(seq_along(MODULOS_ESCALAS), function(i) {
@@ -422,7 +455,7 @@ server <- function(input, output, session) {
     )
     output[[paste0("t_escala_", i)]] <- renderDT(server = FALSE, {
       r <- resumen_escala(datos(), m)
-      alto <- if (MODULOS_ESCALAS[[m]]$escala == "secuencial") "% Regularmente o a menudo" else "% Alto (4-5)"
+      alto <- if (MODULOS_ESCALAS[[m]]$escala == "secuencial") "% Siempre o casi siempre" else "% Alto (4-5)"
       tab <- data.frame(
         Ítem = r$item, Descripción = r$etiqueta, N = r$n,
         Media = num_es(r$media, 0.01), DE = num_es(r$de, 0.01),
@@ -454,9 +487,9 @@ server <- function(input, output, session) {
       `% Prefiero no responder` = pct_es(r$pct_nr, 0.1), check.names = FALSE
     ))
   })
-  output$g_dec1 <- renderPlot(g_histograma(datos()$dec_1_num, 10), bg = COLORES$superficie, res = 96)
-  output$g_dec2 <- renderPlot(g_histograma(datos()$dec_2_num, 10, etiquetas = function(x) paste0(x, "%")), bg = COLORES$superficie, res = 96)
-  output$g_dec3 <- renderPlot(g_histograma(datos()$dec_3_num, 10, etiquetas = function(x) paste0(x, "%")), bg = COLORES$superficie, res = 96)
+  output$g_dec1 <- renderPlot(g_histograma(datos()$dec_1_num, 5), bg = COLORES$superficie, res = 96)
+  output$g_dec2 <- renderPlot(g_histograma(datos()$dec_2_num, 5, etiquetas = function(x) paste0(x, "%")), bg = COLORES$superficie, res = 96)
+  output$g_dec3 <- renderPlot(g_histograma(datos()$dec_3_num, 5, etiquetas = function(x) paste0(x, "%")), bg = COLORES$superficie, res = 96)
   output$g_ranking <- renderPlot(g_ranking(resumen_ranking(datos())), bg = COLORES$superficie, res = 96)
 
   # Calidad -------------------------------------------------------------------
@@ -521,6 +554,117 @@ server <- function(input, output, session) {
     ))
   })
 
+  # Patrones de respuesta: el análisis tarda unos segundos, así que se guarda en
+  # caché según el conjunto de casos (cambia solo con filtros o casos nuevos).
+  patrones <- reactive({
+    d <- completas()
+    if (!requireNamespace("responsePatterns", quietly = TRUE)) return(NULL)
+    withProgress(message = "Calculando patrones de respuesta...", value = 0.5,
+                 patrones_respuesta(d))
+  }) |> bindCache(sort(completas()$session_id))
+
+  n_pct <- function(k, n) if (n > 0) sprintf("%s (%s)", num_es(k), pct_es(k / n, 0.1)) else "–"
+  fila_mini <- function(etiqueta, ..., negrita = FALSE) {
+    celdas <- lapply(c(...), function(x) tags$td(class = "num", x))
+    fila <- tags$tr(tags$td(etiqueta), celdas)
+    if (negrita) tagAppendAttributes(fila, style = "font-weight: 600;") else fila
+  }
+
+  output$t_patrones <- renderUI({
+    if (!requireNamespace("responsePatterns", quietly = TRUE)) {
+      return(tags$p(class = "enunciado", "Falta instalar el paquete responsePatterns."))
+    }
+    pr <- patrones()
+    r <- resumen_patrones(pr)
+    if (is.null(r)) return(tags$p(class = "enunciado", "Se necesitan al menos 10 casos válidos por análisis."))
+    nombres <- ifelse(r$analisis == "escalas", "Todas las escalas", tools::toTitleCase(gsub("_", " ", r$analisis)))
+    col <- function(f) vapply(seq_len(nrow(r)), function(i) f(r[i, ]), "")
+    pct_col <- function(v) col(function(x) n_pct(round(x[[v]] * x$analizados), x$analizados))
+    p <- pr$patrones
+    marcado <- p$n_sospechas > 0
+    grupo <- function(g, etiqueta) {
+      x <- p[g, , drop = FALSE]
+      fila_mini(etiqueta, num_es(nrow(x)),
+                n_pct(sum(x$falla_atencion), nrow(x)),
+                n_pct(sum(x$falla_manip), nrow(x)),
+                n_pct(sum(x$falla_atencion & x$falla_manip), nrow(x)),
+                n_pct(sum(x$rapido), nrow(x)),
+                n_pct(sum(x$rapido & (x$falla_atencion | x$falla_manip)), nrow(x)))
+    }
+    tagList(
+      tags$table(
+        class = "mini",
+        tags$tr(tags$td(), lapply(sprintf("%s (%s ítems)", nombres, r$items),
+                                  function(x) tags$td(class = "num", tags$strong(x)))),
+        fila_mini("Casos analizados", col(function(x) num_es(x$analizados))),
+        fila_mini("Excluidos por muchos NS/NR", col(function(x) num_es(x$excluidos))),
+        fila_mini("Línea recta (todas iguales)", pct_col("linea_recta")),
+        fila_mini("Casi línea recta (90 % o más iguales)", pct_col("casi_recta")),
+        fila_mini("Auto-correlación alta (≥ p95)", pct_col("autocorr")),
+        fila_mini("Secuencia repetida (≥ p95)", pct_col("secuencias")),
+        fila_mini("Marcados (alguna de las dos)", pct_col("marcados"), negrita = TRUE)
+      ),
+      tags$p(class = "enunciado", style = "margin-top: 10px;",
+             sprintf("Marcados en al menos un análisis: %s; en todos: %s, de %s encuestas completas.",
+                     n_pct(sum(marcado), nrow(p)),
+                     n_pct(sum(p$n_sospechas == nrow(r) & nrow(r) > 0), nrow(p)), num_es(nrow(p)))),
+      tags$table(
+        class = "mini",
+        tags$tr(tags$td(), lapply(c("Casos", "Falla atención", "Falla manipulación", "Falla ambos", "Muy rápidos",
+                                    "Muy rápidos y fallan algún chequeo"),
+                                  function(x) tags$td(class = "num", tags$strong(x)))),
+        grupo(marcado, "Marcados por patrones"),
+        grupo(!marcado, "Sin marca")
+      )
+    )
+  })
+
+  output$t_chequeos <- renderUI({
+    k <- cruce_chequeos(completas())
+    if (k$n == 0) return(tags$p(class = "enunciado", "Sin encuestas completas con estos filtros."))
+    n <- k$n
+    aprueba_ambos <- k$ninguno
+    con_p <- function(x, p) {
+      if (is.na(x)) return("–")
+      sprintf("%s (p = %s)", num_es(x, 0.01),
+              if (is.na(p)) "–" else if (p < 0.001) "< 0,001" else num_es(p, 0.001))
+    }
+    tagList(
+      tags$table(
+        class = "mini",
+        tags$tr(tags$td(), tags$td(class = "num", tags$strong("Aprueba manipulación")),
+                tags$td(class = "num", tags$strong("Falla manipulación")),
+                tags$td(class = "num", tags$strong("Total"))),
+        fila_mini("Aprueba atención", n_pct(aprueba_ambos, n), n_pct(k$solo_manip, n),
+                  n_pct(n - k$falla_atencion, n)),
+        fila_mini("Falla atención", n_pct(k$solo_atencion, n), n_pct(k$ambos, n),
+                  n_pct(k$falla_atencion, n)),
+        fila_mini("Total", n_pct(n - k$falla_manip, n), n_pct(k$falla_manip, n), num_es(n), negrita = TRUE)
+      ),
+      tags$p(class = "enunciado", style = "margin: 14px 0 4px;",
+             "Falla de atención según la respuesta al chequeo de manipulación:"),
+      tags$table(
+        class = "mini",
+        tags$tr(tags$td(tags$strong("Respuesta al chequeo de manipulación")),
+                tags$td(class = "num", tags$strong("Casos")),
+                tags$td(class = "num", tags$strong("Falla atención"))),
+        lapply(seq_len(nrow(k$por_respuesta)), function(i) {
+          r <- k$por_respuesta[i, ]
+          fila_mini(r$etiqueta, num_es(r$n), n_pct(r$falla_atencion, r$n))
+        })
+      ),
+      tags$table(
+        class = "mini", style = "margin-top: 14px;",
+        fila_mini("Fallan el chequeo de atención", n_pct(k$falla_atencion, n)),
+        fila_mini("Fallan el chequeo de manipulación", n_pct(k$falla_manip, n)),
+        fila_mini("Fallan ambos", n_pct(k$ambos, n)),
+        fila_mini("Fallan al menos uno", n_pct(k$alguno, n), negrita = TRUE),
+        fila_mini("Correlación entre ambas fallas (phi, 2 × 2)", con_p(k$phi, k$p)),
+        fila_mini("Asociación con las tres respuestas (V de Cramer)", con_p(k$cramer_v, k$p_v))
+      )
+    )
+  })
+
   # Explorador ----------------------------------------------------------------
   output$txt_enunciado <- renderText(enunciado_de(req(input$var_explorar)))
 
@@ -528,13 +672,23 @@ server <- function(input, output, session) {
     v <- req(input$var_explorar)
     d <- datos()
     if (v %in% SLIDERS) {
-      x <- d[[paste0(v, "_num")]]
-      respondio <- respondida(d[[v]]) | d[[paste0(v, "_es_nr")]]
-      x <- x[respondio]
+      # Valores del slider y, al final, las casillas bajo el slider
+      # ("Prefiero no responder"; en posición política también
+      # "Independiente" y "Ninguno")
+      casilla <- d[[paste0(v, "_nr")]]
+      respondio <- respondida(d[[v]]) | respondida(casilla)
+      x <- d[[paste0(v, "_num")]][respondio]
+      casilla <- casilla[respondio]
       valores <- sort(unique(x[!is.na(x)]))
-      tab <- data.frame(codigo = c(format(valores, scientific = FALSE, trim = TRUE), "NR"),
-                        n = c(vapply(valores, function(z) sum(x == z, na.rm = TRUE), 0L), sum(is.na(x))))
-      tab$categoria <- ifelse(tab$codigo == "NR", "Prefiero no responder",
+      cod_casillas <- names(PREGUNTAS[[paste0(v, "_nr")]]$codigos)
+      tab <- data.frame(
+        codigo = c(format(valores, scientific = FALSE, trim = TRUE), cod_casillas),
+        n = c(vapply(valores, function(z) sum(x == z, na.rm = TRUE), 0L),
+              vapply(cod_casillas, function(z) sum(casilla == z), 0L)),
+        stringsAsFactors = FALSE
+      )
+      es_casilla <- tab$codigo %in% cod_casillas & seq_len(nrow(tab)) > length(valores)
+      tab$categoria <- ifelse(es_casilla, etiquetar(paste0(v, "_nr"), tab$codigo),
                               if (grepl("^cbc", v)) clp(suppressWarnings(as.numeric(tab$codigo))) else tab$codigo)
       tab$pct <- if (sum(tab$n)) tab$n / sum(tab$n) else 0
       list(tipo = "num", x = x, tab = tab, v = v)
@@ -547,7 +701,7 @@ server <- function(input, output, session) {
   output$g_explorar <- renderPlot({
     e <- explorar()
     if (e$tipo == "num") {
-      paso <- if (grepl("^cbc", e$v)) 1e5 else if (grepl("^dec", e$v)) 10 else 1
+      paso <- if (grepl("^cbc", e$v)) 1e5 else if (grepl("^dec", e$v)) 5 else 1
       g_histograma(e$x, paso, etiquetas = if (grepl("^cbc", e$v)) function(x) clp(x) else waiver())
     } else if (e$v == "year_of_birth") {
       x <- suppressWarnings(as.numeric(datos()$year_of_birth))

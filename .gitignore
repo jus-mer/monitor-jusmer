@@ -11,3 +11,16 @@ rsconnect/
 
 # Sistema
 .DS_Store
+
+# Bases y salidas con datos de participantes (tickets, id_user, respuestas):
+# nunca subir
+output/
+*.xlsx
+*.xls
+*.csv
+*.rds
+*.RData
+*.sav
+*.dta
+scripts/patrones/
+scripts/log_connect.txt
