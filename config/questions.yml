@@ -1195,4 +1195,27 @@ educ_padres:
     Universitaria completa: '8'
     Estudios de posgrado (magíster o doctorado): '9'
     Prefiero no decir: prefer_not_to_say
+pais_madre:
+  index: 90
+  type: select
+  label: ¿En qué país vivía su madre cuando usted nació?
+  options:
+    Chile: '1'
+    Venezuela: '2'
+    Bolivia: '3'
+    Perú: '4'
+    Colombia: '5'
+    Haití: '6'
+    Ecuador: '7'
+    Argentina: '8'
+    República Dominicana: '9'
+    España: '10'
+    Brasil: '11'
+    Cuba: '12'
+    Paraguay: '13'
+    Otro: '14'
+pais_madre_otro:
+  index: 91
+  type: text
+  label: 'Especifique el país (opcional):'
 

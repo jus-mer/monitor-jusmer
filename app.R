@@ -147,6 +147,11 @@ panel_muestra <- nav_panel(
     width = 1 / 2, fill = FALSE,
     tarjeta("Personas en el hogar", plotOutput("g_hogar", height = "280px")),
     tarjeta("Nivel educativo más alto de los padres", plotOutput("g_educ_padres", height = "280px"))
+  ),
+  layout_column_wrap(
+    width = 1 / 2, fill = FALSE,
+    tarjeta("País donde vivía la madre al nacer", plotOutput("g_pais_madre", height = "340px"),
+            nota = uiOutput("nota_pais_madre", inline = TRUE))
   )
 )
 
@@ -419,6 +424,18 @@ server <- function(input, output, session) {
            "incompleta vienen juntas en Netquest y se cuentan como técnica superior. ",
            if (sin > 0) sprintf("%s casos sin información de Netquest. ", num_es(sin)),
            "Barra: n observado. Marca negra: n límite de la cuota.")
+  })
+  output$g_pais_madre <- renderPlot(g_barras(frecuencias(datos(), "pais_madre")), bg = COLORES$superficie, res = 96)
+  output$nota_pais_madre <- renderUI({
+    d <- datos()
+    x <- d$pais_madre
+    n <- if (is.null(x)) 0 else sum(respondida(x))
+    otros <- if (is.null(d$pais_madre_otro)) character(0) else trimws(d$pais_madre_otro[respondida(d$pais_madre_otro)])
+    otros <- sort(table(tools::toTitleCase(tolower(otros[nzchar(otros)]))), decreasing = TRUE)
+    paste0("Pregunta agregada el 23/11/2026; los casos anteriores no la tienen. ",
+           sprintf("%s casos con respuesta. ", num_es(n)),
+           if (length(otros) > 0) paste0("\"Otro\" especificado: ",
+                                         paste0(names(otros), " (", as.integer(otros), ")", collapse = ", "), "."))
   })
   output$g_education <- renderPlot(g_barras(frecuencias(datos(), "education"), ancho = 46), bg = COLORES$superficie, res = 96)
   output$g_income <- renderPlot(g_barras(frecuencias(datos(), "income"), ancho = 46), bg = COLORES$superficie, res = 96)

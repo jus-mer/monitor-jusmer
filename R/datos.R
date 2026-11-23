@@ -17,6 +17,7 @@ columnas_monitor <- function() {
     "consent_understand", "filtro_calidad",
     unlist(BLOQUES_FLUJO, use.names = FALSE),
     "attention_check",
+    "pais_madre", "pais_madre_otro",  # agregadas el 23/11, fuera de BLOQUES_FLUJO
     paste0(SLIDERS, "_nr")
   ))
 }

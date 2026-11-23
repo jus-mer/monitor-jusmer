@@ -42,11 +42,12 @@ local({
     pedir <- function(cursor) {
       ruta <- paste0("/logs/", canal, "?traversal_direction=backward&limit=1500",
                      if (!is.null(cursor)) paste0("&sort_key__lt=", format(cursor, scientific = FALSE)))
+      renovar <- function(e) {  # el token del log vence (401 o 403): pedir otro
+        token <<- cliente$getAuthorization(canal)
+        GET(logs_api, list(accessToken = token), ruta)$data
+      }
       tryCatch(GET(logs_api, list(accessToken = token), ruta)$data,
-        rsconnect_http_401 = function(e) {  # el token del log vence: pedir otro
-          token <<- cliente$getAuthorization(canal)
-          GET(logs_api, list(accessToken = token), ruta)$data
-        })
+               rsconnect_http_401 = renovar, rsconnect_http_403 = renovar)
     }
     partes <- list(); cursor <- NULL
     repeat {
